@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Expense Reporting</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #0A0C12; color: #E2E4EF; height: 100vh; overflow: hidden; }
+  button, input, select { font-family: inherit; cursor: pointer; outline: none; }
+  .fi { background: #12141E; border: 1px solid #252838; border-radius: 8px; padding: 8px 10px; color: #E2E4EF; font-size: 13px; }
+  .fi:focus { border-color: #6366F1; }
+  .bpri { background: linear-gradient(135deg,#6366F1,#818CF8); border: none; color: #fff; border-radius: 8px; padding: 9px 16px; font-size: 13px; font-weight: 600; }
+  .bpri:hover { opacity: .88; }
+  .bsec { background: #1A1C28; border: 1px solid #252838; color: #9095B0; border-radius: 8px; padding: 9px 14px; font-size: 13px; font-weight: 600; }
+  .bsec:hover { border-color: #818CF8; color: #E2E4EF; }
+  .bnav { background: none; border: none; color: #7880A0; border-radius: 8px; padding: 9px 12px; font-size: 13px; font-weight: 500; display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; }
+  .bnav:hover { background: #1A1C28; color: #E2E4EF; }
+  .bnav.on { background: #1E2038; color: #818CF8; }
+  .card { background: #12141E; border: 1px solid #252838; border-radius: 10px; }
+  .card:hover { border-color: #818CF844; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes fadeup { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:none; } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useMemo, useRef, useEffect } = React;
+
+const CATS = [
+  { name:"Lodging",   icon:"🏨", color:"#6366F1" },
+  { name:"Meals",     icon:"🍽️", color:"#EF4444" },
+  { name:"Travel",    icon:"✈️", color:"#F59E0B" },
+  { name:"Software",  icon:"💻", color:"#3B82F6" },
+  { name:"Office",    icon:"📎", color:"#8B5CF6" },
+  { name:"Marketing", icon:"📣", color:"#10B981" },
+  { name:"Other",     icon:"📦", color:"#6B7280" },
+];
+
+const KEYWORDS = {
+  Lodging:   ["hotel","motel","marriott","hilton","hyatt","airbnb","inn","suites","resort","sheraton","westin"],
+  Meals:     ["restaurant","cafe","coffee","starbucks","mcdonald","subway","pizza","grill","diner","sushi","burger","sweetgreen","chipotle","doordash","food"],
+  Travel:    ["airline","airlines","delta","united","american","jetblue","southwest","uber","lyft","taxi","amtrak","rental car","hertz","avis","parking"],
+  Software:  ["aws","google cloud","azure","github","adobe","microsoft","zoom","slack","notion","figma","dropbox","salesforce"],
+  Office:    ["staples","office depot","fedex","ups","usps","printing","supplies"],
+  Marketing: ["facebook","meta","google ads","instagram","twitter","linkedin","advertising","canva","mailchimp"],
+};
+
+const catColor = n => CATS.find(c=>c.name===n)?.color ?? "#6B7280";
+const catIcon  = n => CATS.find(c=>c.name===n)?.icon  ?? "📦";
+const fmt = n => "$"+Number(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,",");
+const todayStr = () => new Date().toISOString().slice(0,10);
+const dateLabel = s => new Date(s+"T00:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"});
+let _id = 200;
+const uid = () => ++_id;
+
+function guessCategory(merchant) {
+  const text = (merchant||"").toLowerCase();
+  for (const [cat, words] of Object.entries(KEYWORDS)) {
+    if (words.some(w => text.includes(w))) return cat;
+  }
+  return "Other";
+}
+
+const SAMPLE_REPORT = {
+  id:1, name:"NYC Trip — March 2026", createdAt:"2026-03-01",
+  receipts:[
+    {id:2,merchant:"Marriott Times Square",date:"2026-03-01",totalAmount:431.75,receiptImage:null,
+     splits:[{id:3,category:"Lodging",amount:289.00,description:"2 nights room"},{id:4,category:"Meals",amount:87.50,description:"Room service"},{id:5,category:"Other",amount:55.25,description:"Parking"}]},
+    {id:6,merchant:"Delta Airlines",date:"2026-03-01",totalAmount:342.00,receiptImage:null,
+     splits:[{id:7,category:"Travel",amount:342.00,description:"Flight NYC round-trip"}]},
+    {id:8,merchant:"Sweetgreen",date:"2026-03-04",totalAmount:23.40,receiptImage:null,
+     splits:[{id:9,category:"Meals",amount:23.40,description:"Working lunch"}]},
+  ]
+};
+
+// localStorage storage
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k,v) { try { localStorage.setItem(k, typeof v==="string"?v:JSON.stringify(v)); } catch {} },
+};
+
+async function scanReceipt(base64, mimeType, apiKey, memory) {
+  const hint = Object.keys(memory).length
+    ? "\nMerchant memory (apply if merchant matches): "+JSON.stringify(memory) : "";
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method:"POST",
+    headers:{
+      "Content-Type":"application/json",
+      "x-api-key":apiKey,
+      "anthropic-version":"2023-06-01",
+      "anthropic-dangerous-direct-browser-access":"true",
+    },
+    body:JSON.stringify({
+      model:"claude-haiku-4-5-20251001", max_tokens:1024,
+      messages:[{role:"user",content:[
+        {type:"image",source:{type:"base64",media_type:mimeType,data:base64}},
+        {type:"text",text:"Parse this receipt. Return ONLY valid JSON, no markdown."+hint+"\nCategories: Lodging, Meals, Travel, Software, Office, Marketing, Other\nFormat: {\"merchant\":\"\",\"date\":\"YYYY-MM-DD\",\"totalAmount\":0.00,\"suggestedSplits\":[{\"category\":\"\",\"amount\":0.00,\"description\":\"\"}]}"}
+      ]}]
+    })
+  });
+  if (!res.ok) { const e = await res.json().catch(()=>({error:{message:"HTTP "+res.status}})); throw new Error(e?.error?.message||"Scan failed"); }
+  const data = await res.json();
+  const text = data.content?.find(b=>b.type==="text")?.text ?? "";
+  try { return JSON.parse(text.trim()); }
+  catch { const m = text.match(/\{[\s\S]*\}/); return m ? JSON.parse(m[0]) : null; }
+}
+
+function ReceiptEditor({ receipt, onSave, onDelete, onClose }) {
+  const [r, setR] = useState({...receipt, splits:receipt.splits.map(s=>({...s}))});
+  const total = parseFloat(r.totalAmount)||0;
+  const allocated = r.splits.reduce((a,s)=>a+(parseFloat(s.amount)||0),0);
+  const diff = total - allocated;
+  const balanced = Math.abs(diff)<0.01;
+  const sf = (k,v) => setR(p=>({...p,[k]:v}));
+  const ss = (i,k,v) => setR(p=>({...p,splits:p.splits.map((s,j)=>j===i?{...s,[k]:v}:s)}));
+  const addSplit = () => setR(p=>({...p,splits:[...p.splits,{id:uid(),category:guessCategory(p.merchant),amount:Math.max(0,diff)||"",description:""}]}));
+  const delSplit = i => setR(p=>({...p,splits:p.splits.filter((_,j)=>j!==i)}));
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.8)",backdropFilter:"blur(6px)",zIndex:100,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+      <div style={{background:"#12141E",borderRadius:14,width:"100%",maxWidth:520,maxHeight:"92vh",overflowY:"auto",border:"1px solid #252838",boxShadow:"0 24px 64px rgba(0,0,0,.7)"}}>
+        <div style={{padding:"16px 20px",borderBottom:"1px solid #252838",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <span style={{fontWeight:700,fontSize:15}}>{r.merchant||"New Receipt"}</span>
+          <button onClick={onClose} style={{background:"none",border:"none",color:"#7880A0",fontSize:22,cursor:"pointer",lineHeight:1}}>×</button>
+        </div>
+        <div style={{padding:"18px 20px",display:"flex",flexDirection:"column",gap:13}}>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+            <div><div style={{fontSize:10,color:"#7880A0",fontWeight:600,textTransform:"uppercase",letterSpacing:".06em",marginBottom:5}}>Merchant</div>
+              <input className="fi" value={r.merchant} onChange={e=>sf("merchant",e.target.value)} placeholder="Merchant name" style={{width:"100%"}} /></div>
+            <div><div style={{fontSize:10,color:"#7880A0",fontWeight:600,textTransform:"uppercase",letterSpacing:".06em",marginBottom:5}}>Date</div>
+              <input className="fi" type="date" value={r.date} onChange={e=>sf("date",e.target.value)} style={{width:"100%"}} /></div>
+          </div>
+          <div><div style={{fontSize:10,color:"#7880A0",fontWeight:600,textTransform:"uppercase",letterSpacing:".06em",marginBottom:5}}>Total Amount</div>
+            <input className="fi" type="number" step="0.01" value={r.totalAmount} onChange={e=>sf("totalAmount",e.target.value)} placeholder="0.00" style={{width:"100%"}} /></div>
+          <div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+              <span style={{fontSize:10,color:"#7880A0",fontWeight:600,textTransform:"uppercase",letterSpacing:".06em"}}>Line Items</span>
+              <span style={{fontSize:11,fontWeight:700,color:balanced?"#10B981":diff>0?"#F59E0B":"#EF4444"}}>
+                {balanced?"✓ Balanced":diff>0?fmt(diff)+" unallocated":fmt(Math.abs(diff))+" over"}
+              </span>
+            </div>
+            {r.splits.map((s,i)=>(
+              <div key={s.id} style={{display:"grid",gridTemplateColumns:"130px 1fr 80px 24px",gap:6,marginBottom:6,alignItems:"center"}}>
+                <select className="fi" value={s.category} onChange={e=>ss(i,"category",e.target.value)}>
+                  {CATS.map(c=><option key={c.name}>{c.name}</option>)}
+                </select>
+                <input className="fi" value={s.description} onChange={e=>ss(i,"description",e.target.value)} placeholder="Description" />
+                <input className="fi" type="number" step="0.01" value={s.amount} onChange={e=>ss(i,"amount",e.target.value)} placeholder="0.00" />
+                <button onClick={()=>delSplit(i)} style={{background:"none",border:"none",color:"#4B5470",fontSize:18,cursor:"pointer",lineHeight:1}}>×</button>
+              </div>
+            ))}
+            <button onClick={addSplit} style={{width:"100%",padding:"7px",background:"#1A1C28",border:"1px dashed #252838",borderRadius:8,color:"#7880A0",fontSize:12,cursor:"pointer",marginTop:2}}>+ Add line item</button>
+          </div>
+          {r.receiptImage&&<div><div style={{fontSize:10,color:"#7880A0",fontWeight:600,textTransform:"uppercase",letterSpacing:".06em",marginBottom:5}}>Receipt Image</div>
+            <img src={r.receiptImage} alt="receipt" style={{width:"100%",borderRadius:8,border:"1px solid #252838",objectFit:"contain",maxHeight:300}} /></div>}
+        </div>
+        <div style={{padding:"14px 20px",borderTop:"1px solid #252838",display:"flex",justifyContent:"space-between"}}>
+          <button onClick={()=>onDelete(r.id)} style={{background:"#2A1520",border:"1px solid #EF444433",color:"#EF4444",borderRadius:8,padding:"9px 14px",fontSize:13,fontWeight:600,cursor:"pointer"}}>Delete</button>
+          <div style={{display:"flex",gap:8}}>
+            <button onClick={onClose} style={{background:"#1A1C28",border:"1px solid #252838",color:"#9095B0",borderRadius:8,padding:"9px 14px",fontSize:13,cursor:"pointer"}}>Cancel</button>
+            <button onClick={()=>onSave(r)} style={{background:"linear-gradient(135deg,#6366F1,#818CF8)",border:"none",color:"#fff",borderRadius:8,padding:"9px 18px",fontSize:13,fontWeight:600,cursor:"pointer"}}>Save</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ReportsHome({ reports, onOpen, onCreate }) {
+  return (
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:24}}>
+        <div><h1 style={{fontSize:20,fontWeight:700}}>Expense Reports</h1>
+          <p style={{color:"#7880A0",fontSize:12,marginTop:2}}>{reports.length} report{reports.length!==1?"s":""}</p></div>
+        <button className="bpri" onClick={onCreate}>+ New Report</button>
+      </div>
+      {reports.length===0&&<div style={{textAlign:"center",padding:"60px 0",color:"#4B5470"}}>
+        <div style={{fontSize:36,marginBottom:10}}>📊</div>
+        <p style={{marginBottom:16}}>No reports yet</p>
+        <button className="bpri" onClick={onCreate}>Create your first report</button>
+      </div>}
+      <div style={{display:"flex",flexDirection:"column",gap:10}}>
+        {reports.map(report=>{
+          const total = report.receipts.flatMap(r=>r.splits).reduce((a,s)=>a+(parseFloat(s.amount)||0),0);
+          const cats = [...new Set(report.receipts.flatMap(r=>r.splits.map(s=>s.category)))];
+          return (
+            <div key={report.id} className="card" onClick={()=>onOpen(report.id)} style={{padding:"16px 18px",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div>
+                <p style={{fontWeight:600,fontSize:15,marginBottom:3}}>{report.name}</p>
+                <p style={{color:"#7880A0",fontSize:12,marginBottom:8}}>{dateLabel(report.createdAt)} · {report.receipts.length} receipt{report.receipts.length!==1?"s":""}</p>
+                <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+                  {cats.map(c=><span key={c} style={{fontSize:11,padding:"2px 7px",borderRadius:20,background:catColor(c)+"22",color:catColor(c),fontWeight:600}}>{catIcon(c)} {c}</span>)}
+                </div>
+              </div>
+              <div style={{textAlign:"right",flexShrink:0,marginLeft:16}}>
+                <p style={{fontWeight:700,fontSize:18,color:"#818CF8",fontFamily:"monospace"}}>{fmt(total)}</p>
+                <p style={{color:"#4B5470",fontSize:11,marginTop:2}}>→</p>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ReceiptsView({ receipts, totalSpend, onOpen, onNew, onScan }) {
+  const [search, setSearch] = useState("");
+  const [catFilter, setCatFilter] = useState("All");
+  const shown = useMemo(()=>receipts.filter(r=>{
+    const ms = !search||r.merchant.toLowerCase().includes(search.toLowerCase())||r.splits.some(s=>s.description.toLowerCase().includes(search.toLowerCase()));
+    const mc = catFilter==="All"||r.splits.some(s=>s.category===catFilter);
+    return ms&&mc;
+  }),[receipts,search,catFilter]);
+  return (
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
+        <p style={{color:"#7880A0",fontSize:13}}>{receipts.length} receipts · {fmt(totalSpend)}</p>
+        <div style={{display:"flex",gap:8}}>
+          <button className="bsec" onClick={onScan}>🧾 Scan</button>
+          <button className="bpri" onClick={onNew}>+ Add</button>
+        </div>
+      </div>
+      <div style={{display:"flex",gap:8,marginBottom:14}}>
+        <input className="fi" placeholder="🔍 Search…" value={search} onChange={e=>setSearch(e.target.value)} style={{width:210}} />
+        <select className="fi" value={catFilter} onChange={e=>setCatFilter(e.target.value)} style={{width:145}}>
+          <option>All</option>{CATS.map(c=><option key={c.name}>{c.name}</option>)}
+        </select>
+      </div>
+      <div style={{display:"flex",flexDirection:"column",gap:9}}>
+        {shown.length===0&&<div style={{textAlign:"center",padding:"40px 0",color:"#4B5470"}}><div style={{fontSize:28,marginBottom:6}}>🧾</div><p>No receipts — scan or add one</p></div>}
+        {shown.map(r=>(
+          <div key={r.id} className="card" onClick={()=>onOpen(r)} style={{padding:"13px 15px",display:"flex",gap:11,alignItems:"flex-start",cursor:"pointer"}}>
+            <div style={{width:40,height:52,background:"#1A1C28",borderRadius:6,border:"1px solid #252838",flexShrink:0,overflow:"hidden",display:"flex",alignItems:"center",justifyContent:"center"}}>
+              {r.receiptImage?<img src={r.receiptImage} alt="" style={{width:"100%",height:"100%",objectFit:"contain"}} />:<span style={{fontSize:18}}>🧾</span>}
+            </div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+                <div><p style={{fontWeight:600,fontSize:14}}>{r.merchant}</p><p style={{color:"#7880A0",fontSize:12,marginTop:1}}>{r.date}</p></div>
+                <p style={{fontWeight:700,fontSize:14,color:"#818CF8",fontFamily:"monospace",flexShrink:0,marginLeft:8}}>{fmt(r.totalAmount)}</p>
+              </div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:4,marginTop:6}}>
+                {r.splits.map(s=><span key={s.id} style={{fontSize:11,padding:"2px 7px",borderRadius:20,background:catColor(s.category)+"22",color:catColor(s.category),fontWeight:600}}>{catIcon(s.category)} {s.category}</span>)}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ReportView({ report, allSplits, totalSpend, onRename }) {
+  const receipts = report.receipts;
+  const withImages = receipts.filter(r=>r.receiptImage);
+  const byCat = {};
+  allSplits.forEach(s=>{ byCat[s.category]=(byCat[s.category]||0)+s.amount; });
+  const dateStr = new Date().toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"});
+
+  const handleDownload = () => {
+    const catRows = Object.entries(byCat).sort((a,b)=>b[1]-a[1])
+      .map(([cat,amt])=>`<tr><td><span class="badge" style="background:${catColor(cat)}22;color:${catColor(cat)}">${catIcon(cat)} ${cat}</span></td><td class="r">${fmt(amt)}</td><td class="r">${((amt/totalSpend)*100).toFixed(1)}%</td></tr>`).join("");
+    const lineRows = allSplits
+      .map(s=>`<tr><td>${s.merchant}</td><td>${s.date}</td><td><span class="badge" style="background:${catColor(s.category)}22;color:${catColor(s.category)}">${catIcon(s.category)} ${s.category}</span></td><td>${s.description||"—"}</td><td class="r">${fmt(s.amount)}</td></tr>`).join("");
+    const imgSection = withImages.length===0?"": `<h2>Receipt Images</h2><div class="imgs">${withImages.map(r=>`<div class="imgcard"><div class="imghead"><b>${r.merchant}</b><span>${r.date}</span><span class="rv">${fmt(r.totalAmount)}</span></div><img src="${r.receiptImage}" style="width:100%;height:auto;display:block;background:#f9fafb"/></div>`).join("")}</div>`;
+    const html=`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${report.name}</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:sans-serif;color:#111;font-size:13px;line-height:1.5;padding:32px;max-width:860px;margin:0 auto}.printbtn{display:block;margin:0 0 28px auto;padding:10px 22px;background:#4f46e5;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer}@media print{.printbtn{display:none}body{padding:0}@page{margin:1.4cm;size:A4}}h1{font-size:22px;font-weight:700;margin-bottom:2px}.meta{color:#6b7280;font-size:11px;margin-bottom:24px}.summary{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:24px}.sbox{border:1px solid #e5e7eb;border-radius:8px;padding:12px 14px}.sval{font-size:22px;font-weight:700;color:#4f46e5;margin:3px 0 1px}.slbl{font-size:10px;font-weight:700;text-transform:uppercase;color:#9ca3af;letter-spacing:.05em}h2{font-size:10px;font-weight:700;text-transform:uppercase;color:#9ca3af;letter-spacing:.06em;margin:24px 0 8px;border-bottom:1px solid #f3f4f6;padding-bottom:4px}table{width:100%;border-collapse:collapse}th{text-align:left;font-size:10px;color:#9ca3af;font-weight:700;text-transform:uppercase;padding:7px 10px;border-bottom:2px solid #e5e7eb}td{padding:8px 10px;border-bottom:1px solid #f5f5f5;font-size:12px}tfoot td{font-weight:700;border-top:2px solid #d1d5db;border-bottom:none;padding-top:10px}.r{text-align:right;font-family:monospace;font-weight:600}.badge{display:inline-block;padding:1px 7px;border-radius:20px;font-size:11px;font-weight:600}.imgs{display:flex;flex-direction:column;gap:24px;margin-top:8px}.imgcard{border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;page-break-inside:avoid}.imghead{padding:8px 10px;display:flex;gap:8px;align-items:baseline;background:#f9fafb;border-bottom:1px solid #e5e7eb}.imghead b{font-weight:600;font-size:13px;flex:1}.imghead span{color:#6b7280;font-size:11px}.rv{font-family:monospace;font-weight:700!important;color:#4f46e5!important}</style></head><body>
+<button class="printbtn" onclick="window.print()">🖨 Print / Save as PDF</button>
+<h1>${report.name}</h1><p class="meta">Generated ${dateStr} · ${receipts.length} receipts · ${allSplits.length} line items</p>
+<div class="summary"><div class="sbox"><div class="slbl">Total Spend</div><div class="sval">${fmt(totalSpend)}</div></div><div class="sbox"><div class="slbl">Receipts</div><div class="sval">${receipts.length}</div></div><div class="sbox"><div class="slbl">Categories</div><div class="sval">${Object.keys(byCat).length}</div></div></div>
+<h2>By Category</h2><table><thead><tr><th>Category</th><th style="text-align:right">Amount</th><th style="text-align:right">%</th></tr></thead><tbody>${catRows}</tbody><tfoot><tr><td>Total</td><td class="r">${fmt(totalSpend)}</td><td></td></tr></tfoot></table>
+<h2>All Line Items</h2><table><thead><tr><th>Merchant</th><th>Date</th><th>Category</th><th>Description</th><th style="text-align:right">Amount</th></tr></thead><tbody>${lineRows}</tbody><tfoot><tr><td colspan="4">Total</td><td class="r">${fmt(totalSpend)}</td></tr></tfoot></table>
+${imgSection}</body></html>`;
+    const blob=new Blob([html],{type:"text/html"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url;a.download=report.name.replace(/\s+/g,"-").replace(/[^a-zA-Z0-9\-]/g,"")+"-"+todayStr()+".html";
+    document.body.appendChild(a);a.click();document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(url),5000);
+  };
+
+  return (
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:22}}>
+        <div>
+          <input value={report.name} onChange={e=>onRename(e.target.value)} style={{fontSize:18,fontWeight:700,background:"transparent",border:"none",borderBottom:"2px solid #252838",color:"#E2E4EF",padding:"2px 0",width:300,outline:"none"}} />
+          <p style={{color:"#4B5470",fontSize:11,marginTop:3}}>Click to rename · created {dateLabel(report.createdAt)}</p>
+        </div>
+        <button className="bpri" onClick={handleDownload}>⬇ Download Report</button>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:20}}>
+        {[["Total Spend",fmt(totalSpend)],["Receipts",receipts.length],["Categories",Object.keys(byCat).length]].map(([l,v])=>(
+          <div key={l} style={{background:"#12141E",border:"1px solid #252838",borderRadius:10,padding:"13px 16px"}}>
+            <p style={{fontSize:10,color:"#7880A0",fontWeight:600,textTransform:"uppercase",letterSpacing:".06em",marginBottom:3}}>{l}</p>
+            <p style={{fontSize:22,fontWeight:700,color:"#818CF8"}}>{v}</p>
+          </div>
+        ))}
+      </div>
+      <div style={{background:"#12141E",border:"1px solid #252838",borderRadius:10,marginBottom:16,overflow:"hidden"}}>
+        <div style={{padding:"11px 16px",borderBottom:"1px solid #252838"}}><span style={{fontSize:10,color:"#7880A0",fontWeight:600,textTransform:"uppercase",letterSpacing:".06em"}}>By Category</span></div>
+        <table style={{width:"100%",borderCollapse:"collapse"}}>
+          <thead><tr style={{borderBottom:"1px solid #252838"}}>{["Category","Amount","% of Total"].map((h,i)=><th key={h} style={{padding:"8px 16px",textAlign:i>0?"right":"left",fontSize:10,color:"#4B5470",fontWeight:600,textTransform:"uppercase",letterSpacing:".05em"}}>{h}</th>)}</tr></thead>
+          <tbody>{Object.entries(byCat).sort((a,b)=>b[1]-a[1]).map(([cat,amt])=>(
+            <tr key={cat} style={{borderBottom:"1px solid #1A1C28"}}>
+              <td style={{padding:"8px 16px"}}><span style={{fontSize:11,padding:"2px 7px",borderRadius:20,background:catColor(cat)+"22",color:catColor(cat),fontWeight:600}}>{catIcon(cat)} {cat}</span></td>
+              <td style={{padding:"8px 16px",textAlign:"right",fontFamily:"monospace",fontWeight:700}}>{fmt(amt)}</td>
+              <td style={{padding:"8px 16px",textAlign:"right",color:"#7880A0",fontSize:12}}>{((amt/totalSpend)*100).toFixed(1)}%</td>
+            </tr>
+          ))}</tbody>
+          <tfoot><tr style={{borderTop:"2px solid #252838"}}><td style={{padding:"8px 16px",fontWeight:700}}>Total</td><td style={{padding:"8px 16px",textAlign:"right",fontFamily:"monospace",fontWeight:700,color:"#818CF8"}}>{fmt(totalSpend)}</td><td></td></tr></tfoot>
+        </table>
+      </div>
+      <div style={{background:"#12141E",border:"1px solid #252838",borderRadius:10,overflow:"hidden"}}>
+        <div style={{padding:"11px 16px",borderBottom:"1px solid #252838"}}><span style={{fontSize:10,color:"#7880A0",fontWeight:600,textTransform:"uppercase",letterSpacing:".06em"}}>All Line Items</span></div>
+        <table style={{width:"100%",borderCollapse:"collapse"}}>
+          <thead><tr style={{borderBottom:"1px solid #252838"}}>{["Merchant","Date","Category","Description","Amount"].map((h,i)=><th key={h} style={{padding:"8px 16px",textAlign:i===4?"right":"left",fontSize:10,color:"#4B5470",fontWeight:600,textTransform:"uppercase",letterSpacing:".05em"}}>{h}</th>)}</tr></thead>
+          <tbody>
+            {allSplits.length===0&&<tr><td colSpan={5} style={{padding:24,textAlign:"center",color:"#4B5470"}}>No line items yet</td></tr>}
+            {allSplits.map((s,i)=>(
+              <tr key={i} style={{borderBottom:"1px solid #1A1C28"}}>
+                <td style={{padding:"8px 16px",fontSize:13,fontWeight:500}}>{s.merchant}</td>
+                <td style={{padding:"8px 16px",fontSize:12,color:"#7880A0"}}>{s.date}</td>
+                <td style={{padding:"8px 16px"}}><span style={{fontSize:11,padding:"2px 7px",borderRadius:20,background:catColor(s.category)+"22",color:catColor(s.category),fontWeight:600}}>{catIcon(s.category)} {s.category}</span></td>
+                <td style={{padding:"8px 16px",fontSize:12,color:"#9095B0"}}>{s.description||"—"}</td>
+                <td style={{padding:"8px 16px",textAlign:"right",fontFamily:"monospace",fontWeight:700}}>{fmt(s.amount)}</td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot><tr style={{borderTop:"2px solid #252838"}}><td colSpan={4} style={{padding:"8px 16px",fontWeight:700}}>Total</td><td style={{padding:"8px 16px",textAlign:"right",fontFamily:"monospace",fontWeight:700,color:"#818CF8"}}>{fmt(totalSpend)}</td></tr></tfoot>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [reports,   setReports]   = useState(null);
+  const [activeId,  setActiveId]  = useState(null);
+  const [view,      setView]      = useState("receipts");
+  const [editing,   setEditing]   = useState(null);
+  const [scanning,  setScanning]  = useState(false);
+  const [scanProg,  setScanProg]  = useState({done:0,total:0,file:""});
+  const [toast,     setToast]     = useState(null);
+  const [apiKey,    setApiKey]    = useState("");
+  const [showKey,   setShowKey]   = useState(false);
+  const [memory,    setMemory]    = useState({});
+  const [loaded,    setLoaded]    = useState(false);
+  const fileRef   = useRef();
+  const importRef = useRef();
+
+  const activeReport = useMemo(()=>reports?.find(r=>r.id===activeId)||null,[reports,activeId]);
+
+  useEffect(()=>{
+    const rs = store.get("er-reports");
+    const k  = store.get("er-apikey");
+    const m  = store.get("er-memory");
+    setReports(rs ? JSON.parse(rs) : [SAMPLE_REPORT]);
+    if (k) setApiKey(k);
+    if (m) setMemory(JSON.parse(m));
+    setLoaded(true);
+  },[]);
+
+  useEffect(()=>{
+    if (!loaded||reports===null) return;
+    store.set("er-reports", reports);
+    store.set("er-memory",  memory);
+  },[reports,memory,loaded]);
+
+  const handleApiKey = v => { setApiKey(v); store.set("er-apikey",v); };
+  const showToast = msg => { setToast(msg); setTimeout(()=>setToast(null),3500); };
+
+  const allSplits = useMemo(()=>
+    (activeReport?.receipts||[]).flatMap(r=>r.splits.map(s=>({...s,merchant:r.merchant,date:r.date})))
+  ,[activeReport]);
+  const totalSpend = allSplits.reduce((a,s)=>a+(parseFloat(s.amount)||0),0);
+
+  const createReport = () => {
+    const r = {id:uid(),name:"New Report",createdAt:todayStr(),receipts:[]};
+    setReports(prev=>[...(prev||[]),r]);
+    setActiveId(r.id); setView("receipts");
+  };
+
+  const updateActiveReceipts = fn => setReports(prev=>prev.map(r=>r.id===activeId?{...r,receipts:fn(r.receipts)}:r));
+
+  const updateMemory = r => {
+    if (!r.merchant) return;
+    const counts={};
+    r.splits.forEach(s=>{counts[s.category]=(counts[s.category]||0)+1;});
+    const top=Object.entries(counts).sort((a,b)=>b[1]-a[1])[0];
+    if (top) setMemory(prev=>({...prev,[r.merchant.toLowerCase()]:top[0]}));
+  };
+
+  const saveReceipt = updated => {
+    updateMemory(updated);
+    updateActiveReceipts(prev=>prev.find(r=>r.id===updated.id)?prev.map(r=>r.id===updated.id?updated:r):[...prev,updated]);
+    setEditing(null);
+  };
+  const deleteReceipt = id => { updateActiveReceipts(prev=>prev.filter(r=>r.id!==id)); setEditing(null); };
+  const openNew = () => setEditing({id:uid(),merchant:"",date:todayStr(),totalAmount:"",receiptImage:null,splits:[{id:uid(),category:"Other",amount:"",description:""}]});
+  const handleScan = () => { if (!apiKey.trim()){showToast("⚠️ Enter your Claude API key first");return;} fileRef.current.click(); };
+
+  const handleFiles = async e => {
+    const files=Array.from(e.target.files); fileRef.current.value="";
+    if (!files.length) return;
+    setScanning(true); setScanProg({done:0,total:files.length,file:""});
+    const added=[];
+    for (let i=0;i<files.length;i++) {
+      setScanProg({done:i,total:files.length,file:files[i].name});
+      try {
+        const dataUrl=await new Promise((res,rej)=>{const rd=new FileReader();rd.onload=()=>res(rd.result);rd.onerror=rej;rd.readAsDataURL(files[i]);});
+        const base64=dataUrl.split(",")[1];
+        const data=await scanReceipt(base64,files[i].type||"image/jpeg",apiKey,memory);
+        if (data) {
+          const memCat=memory[data.merchant?.toLowerCase()];
+          const splits=(data.suggestedSplits||[{category:guessCategory(data.merchant),amount:parseFloat(data.totalAmount)||0,description:""}])
+            .map((s,idx)=>({id:uid(),category:idx===0&&memCat?memCat:s.category,amount:parseFloat(s.amount)||0,description:s.description||""}));
+          added.push({id:uid(),merchant:data.merchant||"Unknown",date:data.date||todayStr(),totalAmount:parseFloat(data.totalAmount)||0,receiptImage:dataUrl,splits});
+        }
+      } catch(err){showToast("❌ "+err.message);}
+    }
+    updateActiveReceipts(prev=>[...prev,...added]);
+    setScanning(false);
+    showToast("✅ Scanned "+added.length+" of "+files.length+" receipt"+(files.length!==1?"s":""));
+    if (added.length) setEditing(added[added.length-1]);
+  };
+
+  const handleExport = () => {
+    const json=JSON.stringify({exportedAt:new Date().toISOString(),reports,memory},null,2);
+    const blob=new Blob([json],{type:"application/json"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url;a.download="expense-backup-"+todayStr()+".json";
+    document.body.appendChild(a);a.click();document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(url),5000);
+    showToast("✅ Backup downloaded — all "+reports.length+" reports saved");
+  };
+
+  const handleImport = e => {
+    const file=e.target.files[0]; if (!file) return;
+    importRef.current.value="";
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      try {
+        const data=JSON.parse(ev.target.result);
+        if (data.reports) setReports(data.reports);
+        if (data.memory)  setMemory(data.memory);
+        setActiveId(null);
+        showToast("✅ Restored "+(data.reports?.length||0)+" reports");
+      } catch { showToast("❌ Invalid backup file"); }
+    };
+    reader.readAsText(file);
+  };
+
+  if (!loaded) return <div style={{background:"#0A0C12",minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",color:"#7880A0"}}>Loading…</div>;
+
+  return (
+    <div style={{fontFamily:"system-ui,sans-serif",background:"#0A0C12",height:"100vh",color:"#E2E4EF",display:"flex",overflow:"hidden"}}>
+      <input ref={fileRef}   type="file" accept="image/*" multiple style={{display:"none"}} onChange={handleFiles} />
+      <input ref={importRef} type="file" accept=".json"           style={{display:"none"}} onChange={handleImport} />
+
+      {scanning&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.88)",backdropFilter:"blur(8px)",zIndex:200,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:14}}>
+        <div style={{fontSize:38,animation:"spin 1.5s linear infinite"}}>🧾</div>
+        <div style={{fontSize:17,fontWeight:700}}>Scanning receipts…</div>
+        <div style={{color:"#7880A0",fontSize:13}}>{scanProg.done} of {scanProg.total} done</div>
+        {scanProg.file&&<div style={{color:"#4B5470",fontSize:12,maxWidth:260,textAlign:"center",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{scanProg.file}</div>}
+        <div style={{width:260,height:4,background:"#252838",borderRadius:2,overflow:"hidden"}}>
+          <div style={{height:"100%",background:"linear-gradient(90deg,#818CF8,#F59E0B)",borderRadius:2,transition:"width .3s",width:(scanProg.total?(scanProg.done/scanProg.total*100):0)+"%"}} />
+        </div>
+      </div>}
+
+      {toast&&<div style={{position:"fixed",bottom:20,left:"50%",transform:"translateX(-50%)",background:"#1E2130",border:"1px solid #252838",borderRadius:10,padding:"11px 18px",fontSize:13,fontWeight:500,zIndex:300,animation:"fadeup .2s ease",boxShadow:"0 8px 24px rgba(0,0,0,.5)",whiteSpace:"nowrap"}}>{toast}</div>}
+
+      {editing&&<ReceiptEditor receipt={editing} onSave={saveReceipt} onDelete={deleteReceipt} onClose={()=>setEditing(null)} />}
+
+      <aside style={{width:210,background:"#0D0F18",borderRight:"1px solid #1A1C28",padding:"18px 12px",display:"flex",flexDirection:"column",gap:2,flexShrink:0,overflowY:"auto"}}>
+        <div style={{display:"flex",alignItems:"center",gap:8,padding:"4px 8px",marginBottom:14}}>
+          <div style={{width:28,height:28,background:"linear-gradient(135deg,#818CF8,#F59E0B)",borderRadius:6,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14}}>💸</div>
+          <span style={{fontWeight:700,fontSize:14}}>Expense Reporting</span>
+        </div>
+        <button className={"bnav"+(activeId===null?" on":"")} onClick={()=>setActiveId(null)}>📋 All Reports</button>
+        {activeReport&&<>
+          <div style={{margin:"6px 0 2px 10px",fontSize:10,color:"#4B5470",fontWeight:600,textTransform:"uppercase",letterSpacing:".05em",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{activeReport.name}</div>
+          <button className={"bnav"+(view==="receipts"?" on":"")} onClick={()=>setView("receipts")} style={{paddingLeft:20}}>🧾 Receipts</button>
+          <button className={"bnav"+(view==="report"?" on":"")}   onClick={()=>setView("report")}   style={{paddingLeft:20}}>📊 Summary</button>
+        </>}
+        <div style={{marginTop:"auto",display:"flex",flexDirection:"column",gap:7,paddingTop:12}}>
+          <div>
+            <div style={{fontSize:10,color:"#4B5470",fontWeight:600,textTransform:"uppercase",letterSpacing:".05em",marginBottom:5}}>Claude API Key</div>
+            <div style={{display:"flex",gap:4}}>
+              <input type={showKey?"text":"password"} className="fi" placeholder="sk-ant-…" value={apiKey} onChange={e=>handleApiKey(e.target.value)} style={{flex:1,fontSize:11,padding:"6px 8px"}} />
+              <button onClick={()=>setShowKey(v=>!v)} style={{background:"#1A1C28",border:"1px solid #252838",borderRadius:7,color:"#7880A0",fontSize:12,padding:"0 7px"}}>{showKey?"🙈":"👁"}</button>
+            </div>
+          </div>
+          {activeId&&<>
+            <button className="bsec" style={{width:"100%",display:"flex",justifyContent:"center",gap:6}} onClick={handleScan}>🧾 Scan receipts</button>
+            <button className="bpri" style={{width:"100%",display:"flex",alignItems:"center",justifyContent:"center",gap:6}} onClick={openNew}>+ Add manually</button>
+          </>}
+          <div style={{borderTop:"1px solid #1A1C28",paddingTop:7,display:"flex",flexDirection:"column",gap:5}}>
+            <div style={{fontSize:10,color:"#4B5470",fontWeight:600,textTransform:"uppercase",letterSpacing:".05em"}}>Backup</div>
+            <button onClick={handleExport} style={{background:"#1A1C28",border:"1px solid #252838",color:"#9095B0",borderRadius:7,padding:"7px 10px",fontSize:12,textAlign:"left",cursor:"pointer"}}>⬇ Export all reports</button>
+            <button onClick={()=>importRef.current.click()} style={{background:"#1A1C28",border:"1px solid #252838",color:"#9095B0",borderRadius:7,padding:"7px 10px",fontSize:12,textAlign:"left",cursor:"pointer"}}>⬆ Restore backup</button>
+          </div>
+        </div>
+      </aside>
+
+      <main style={{flex:1,padding:"26px 28px",overflowY:"auto"}}>
+        {activeId===null&&<ReportsHome reports={reports||[]} onOpen={id=>{setActiveId(id);setView("receipts");}} onCreate={createReport} />}
+        {activeId!==null&&activeReport&&<>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:20,fontSize:13}}>
+            <button onClick={()=>setActiveId(null)} style={{background:"none",border:"none",color:"#7880A0",cursor:"pointer",padding:0}}>All Reports</button>
+            <span style={{color:"#4B5470"}}>›</span>
+            <span style={{color:"#E2E4EF",fontWeight:600}}>{activeReport.name}</span>
+          </div>
+          <div style={{display:"flex",gap:4,marginBottom:22,borderBottom:"1px solid #1A1C28"}}>
+            {[["receipts","🧾 Receipts"],["report","📊 Summary"]].map(([v,label])=>(
+              <button key={v} onClick={()=>setView(v)} style={{background:"none",border:"none",borderBottom:view===v?"2px solid #818CF8":"2px solid transparent",color:view===v?"#818CF8":"#7880A0",padding:"8px 14px",fontSize:13,fontWeight:view===v?600:500,cursor:"pointer",marginBottom:"-1px"}}>
+                {label}
+              </button>
+            ))}
+          </div>
+          {view==="receipts"&&<ReceiptsView receipts={activeReport.receipts} totalSpend={totalSpend} onOpen={setEditing} onNew={openNew} onScan={handleScan} />}
+          {view==="report"&&<ReportView report={activeReport} allSplits={allSplits} totalSpend={totalSpend} onRename={name=>setReports(prev=>prev.map(r=>r.id===activeId?{...r,name}:r))} />}
+        </>}
+      </main>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
