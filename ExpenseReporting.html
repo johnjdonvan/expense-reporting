@@ -96,14 +96,14 @@ async function scanReceipt(base64, mimeType, apiKey, memory) {
       "anthropic-dangerous-direct-browser-access":"true",
     },
     body:JSON.stringify({
-      model:"claude-haiku-4-5-20251001", max_tokens:1024,
+      model:"claude-haiku-4-5-20251001", max_tokens:1024, system:"You are a receipt parser. Return only valid JSON.",
       messages:[{role:"user",content:[
         {type:"image",source:{type:"base64",media_type:mimeType,data:base64}},
         {type:"text",text:"Parse this receipt. Return ONLY valid JSON, no markdown."+hint+"\nCategories: Lodging, Meals, Travel, Software, Office, Marketing, Other\nFormat: {\"merchant\":\"\",\"date\":\"YYYY-MM-DD\",\"totalAmount\":0.00,\"suggestedSplits\":[{\"category\":\"\",\"amount\":0.00,\"description\":\"\"}]}"}
       ]}]
     })
   });
-  if (!res.ok) { const e = await res.json().catch(()=>({error:{message:"HTTP "+res.status}})); throw new Error(e?.error?.message||"Scan failed"); }
+  if (!res.ok) { const e = await res.json().catch(()=>({error:{message:"HTTP "+res.status}})); console.error("API error:",JSON.stringify(e)); throw new Error(e?.error?.message||"Scan failed "+res.status); }
   const data = await res.json();
   const text = data.content?.find(b=>b.type==="text")?.text ?? "";
   try { return JSON.parse(text.trim()); }
