@@ -418,8 +418,8 @@ function App() {
           const splits=(data.suggestedSplits||[{category:guessCategory(data.merchant),amount:parseFloat(data.totalAmount)||0,description:""}])
             .map((s,idx)=>({id:uid(),category:idx===0&&memCat?memCat:s.category,amount:parseFloat(s.amount)||0,description:s.description||""}));
           added.push({id:uid(),merchant:data.merchant||"Unknown",date:data.date||todayStr(),totalAmount:parseFloat(data.totalAmount)||0,receiptImage:dataUrl,splits});
-        }
-      } catch(err){showToast("❌ "+err.message);}
+        } else { showToast("❌ Could not parse response from API"); }
+      } catch(err){showToast("❌ "+(err.message||"Unknown error — check API key"));}
     }
     updateActiveReceipts(prev=>[...prev,...added]);
     setScanning(false);
